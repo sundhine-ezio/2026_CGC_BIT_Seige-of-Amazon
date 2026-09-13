@@ -1,0 +1,63 @@
+Traceback (most recent call last):
+  File "/mnt/c/Users/35921/Desktop/本科学业/计算机博弈大赛/main.py", line 472, in <module>
+    main()
+  File "/mnt/c/Users/35921/Desktop/本科学业/计算机博弈大赛/main.py", line 458, in main
+    run_train_mode(config, args)
+  File "/mnt/c/Users/35921/Desktop/本科学业/计算机博弈大赛/main.py", line 431, in run_train_mode
+    model = load_checkpoint(model_path, net_config)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/35921/Desktop/本科学业/计算机博弈大赛/src/network/train.py", line 307, in load_checkpoint
+    model.load_state_dict(checkpoint["model_state_dict"])
+  File "/home/yg_wsl2/.local/lib/python3.12/site-packages/torch/nn/modules/module.py", line 2639, in load_state_dict
+    raise RuntimeError(
+RuntimeError: Error(s) in loading state_dict for AmazonsNet:
+	Missing key(s) in state_dict: "_tower.4._conv1.weight", "_tower.4._bn1.weight", "_tower.4._bn1.bias", "_tower.4._bn1.running_mean", "_tower.4._bn1.running_var", "_tower.4._conv2.weight", "_tower.4._bn2.weight", "_tower.4._bn2.bias", "_tower.4._bn2.running_mean", "_tower.4._bn2.running_var", "_tower.5._conv1.weight", "_tower.5._bn1.weight", "_tower.5._bn1.bias", "_tower.5._bn1.running_mean", "_tower.5._bn1.running_var", "_tower.5._conv2.weight", "_tower.5._bn2.weight", "_tower.5._bn2.bias", "_tower.5._bn2.running_mean", "_tower.5._bn2.running_var", "_tower.6._conv1.weight", "_tower.6._bn1.weight", "_tower.6._bn1.bias", "_tower.6._bn1.running_mean", "_tower.6._bn1.running_var", "_tower.6._conv2.weight", "_tower.6._bn2.weight", "_tower.6._bn2.bias", "_tower.6._bn2.running_mean", "_tower.6._bn2.running_var", "_tower.7._conv1.weight", "_tower.7._bn1.weight", "_tower.7._bn1.bias", "_tower.7._bn1.running_mean", "_tower.7._bn1.running_var", "_tower.7._conv2.weight", "_tower.7._bn2.weight", "_tower.7._bn2.bias", "_tower.7._bn2.running_mean", "_tower.7._bn2.running_var", "_tower.8._conv1.weight", "_tower.8._bn1.weight", "_tower.8._bn1.bias", "_tower.8._bn1.running_mean", "_tower.8._bn1.running_var", "_tower.8._conv2.weight", "_tower.8._bn2.weight", "_tower.8._bn2.bias", "_tower.8._bn2.running_mean", "_tower.8._bn2.running_var", "_tower.9._conv1.weight", "_tower.9._bn1.weight", "_tower.9._bn1.bias", "_tower.9._bn1.running_mean", "_tower.9._bn1.running_var", "_tower.9._conv2.weight", "_tower.9._bn2.weight", "_tower.9._bn2.bias", "_tower.9._bn2.running_mean", "_tower.9._bn2.running_var", "_tower.10._conv1.weight", "_tower.10._bn1.weight", "_tower.10._bn1.bias", "_tower.10._bn1.running_mean", "_tower.10._bn1.running_var", "_tower.10._conv2.weight", "_tower.10._bn2.weight", "_tower.10._bn2.bias", "_tower.10._bn2.running_mean", "_tower.10._bn2.running_var", "_tower.11._conv1.weight", "_tower.11._bn1.weight", "_tower.11._bn1.bias", "_tower.11._bn1.running_mean", "_tower.11._bn1.running_var", "_tower.11._conv2.weight", "_tower.11._bn2.weight", "_tower.11._bn2.bias", "_tower.11._bn2.running_mean", "_tower.11._bn2.running_var", "_tower.12._conv1.weight", "_tower.12._bn1.weight", "_tower.12._bn1.bias", "_tower.12._bn1.running_mean", "_tower.12._bn1.running_var", "_tower.12._conv2.weight", "_tower.12._bn2.weight", "_tower.12._bn2.bias", "_tower.12._bn2.running_mean", "_tower.12._bn2.running_var". 
+	size mismatch for _stem.0.weight: copying a param with shape torch.Size([128, 6, 3, 3]) from checkpoint, the shape in current model is torch.Size([256, 6, 3, 3]).
+	size mismatch for _stem.1.weight: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _stem.1.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _stem.1.running_mean: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _stem.1.running_var: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.0._conv1.weight: copying a param with shape torch.Size([128, 128, 3, 3]) from checkpoint, the shape in current model is torch.Size([256, 256, 3, 3]).
+	size mismatch for _tower.0._bn1.weight: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.0._bn1.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.0._bn1.running_mean: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.0._bn1.running_var: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.0._conv2.weight: copying a param with shape torch.Size([128, 128, 3, 3]) from checkpoint, the shape in current model is torch.Size([256, 256, 3, 3]).
+	size mismatch for _tower.0._bn2.weight: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.0._bn2.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.0._bn2.running_mean: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.0._bn2.running_var: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.1._conv1.weight: copying a param with shape torch.Size([128, 128, 3, 3]) from checkpoint, the shape in current model is torch.Size([256, 256, 3, 3]).
+	size mismatch for _tower.1._bn1.weight: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.1._bn1.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.1._bn1.running_mean: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.1._bn1.running_var: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.1._conv2.weight: copying a param with shape torch.Size([128, 128, 3, 3]) from checkpoint, the shape in current model is torch.Size([256, 256, 3, 3]).
+	size mismatch for _tower.1._bn2.weight: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.1._bn2.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.1._bn2.running_mean: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.1._bn2.running_var: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.2._conv1.weight: copying a param with shape torch.Size([128, 128, 3, 3]) from checkpoint, the shape in current model is torch.Size([256, 256, 3, 3]).
+	size mismatch for _tower.2._bn1.weight: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.2._bn1.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.2._bn1.running_mean: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.2._bn1.running_var: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.2._conv2.weight: copying a param with shape torch.Size([128, 128, 3, 3]) from checkpoint, the shape in current model is torch.Size([256, 256, 3, 3]).
+	size mismatch for _tower.2._bn2.weight: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.2._bn2.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.2._bn2.running_mean: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.2._bn2.running_var: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.3._conv1.weight: copying a param with shape torch.Size([128, 128, 3, 3]) from checkpoint, the shape in current model is torch.Size([256, 256, 3, 3]).
+	size mismatch for _tower.3._bn1.weight: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.3._bn1.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.3._bn1.running_mean: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.3._bn1.running_var: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.3._conv2.weight: copying a param with shape torch.Size([128, 128, 3, 3]) from checkpoint, the shape in current model is torch.Size([256, 256, 3, 3]).
+	size mismatch for _tower.3._bn2.weight: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.3._bn2.bias: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.3._bn2.running_mean: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _tower.3._bn2.running_var: copying a param with shape torch.Size([128]) from checkpoint, the shape in current model is torch.Size([256]).
+	size mismatch for _policy_from.0.weight: copying a param with shape torch.Size([1, 128, 1, 1]) from checkpoint, the shape in current model is torch.Size([1, 256, 1, 1]).
+	size mismatch for _policy_to.weight: copying a param with shape torch.Size([100, 128, 1, 1]) from checkpoint, the shape in current model is torch.Size([100, 256, 1, 1]).
+	size mismatch for _policy_arrow.weight: copying a param with shape torch.Size([100, 128, 1, 1]) from checkpoint, the shape in current model is torch.Size([100, 256, 1, 1]).
+	size mismatch for _value.0.weight: copying a param with shape torch.Size([1, 128, 1, 1]) from checkpoint, the shape in current model is torch.Size([1, 256, 1, 1]).

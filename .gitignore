@@ -5,11 +5,6 @@ venv/
 __pycache__/
 *.pyc
 
-# 训练日志
-logs/
-
-# 模型权重文件（通常很大，且可重新训练生成）
-models/
 
 # IDE 和系统文件
 .idea/
