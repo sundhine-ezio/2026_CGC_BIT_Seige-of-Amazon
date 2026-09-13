@@ -1,0 +1,17 @@
+# 虚拟环境（必须排除，里面的符号链接会让 git add 报错）
+venv/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 训练日志
+logs/
+
+# 模型权重文件（通常很大，且可重新训练生成）
+models/
+
+# IDE 和系统文件
+.idea/
+.vscode/
+.DS_Store

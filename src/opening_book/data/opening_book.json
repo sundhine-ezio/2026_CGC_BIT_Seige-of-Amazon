@@ -1,0 +1,11 @@
+{
+  "version": "1.0",
+  "description": "Amazons opening book - sample data",
+  "positions": {
+    "0": [
+      {"move": "d1-d5-g8", "weight": 100, "comment": "中心突破"},
+      {"move": "g1-d4-d8", "weight": 80, "comment": "侧翼发展"},
+      {"move": "a4-a7-d7", "weight": 60, "comment": "边路推进"}
+    ]
+  }
+}

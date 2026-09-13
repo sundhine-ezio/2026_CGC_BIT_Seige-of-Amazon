@@ -1,0 +1,56 @@
+[project]
+name = "amazons"
+version = "0.1.0"
+description = "亚马逊棋计算机博弈系统"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "mypy>=1.0",
+    "ruff>=0.1",
+]
+
+[tool.mypy]
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["numpy.*"]
+ignore_missing_imports = true
+
+# torch 自带 py.typed，但其 stub 与 strict 模式不完全兼容，仅静默 torch 自身的
+# 类型错误，仍检查本项目代码（见 detailed-design.md §10）
+[[tool.mypy.overrides]]
+module = ["torch", "torch.*"]
+ignore_errors = true
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "N",
+    "W",
+    "UP",
+    "B",
+    "C4",
+    "SIM",
+]
+ignore = [
+    "SIM108",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

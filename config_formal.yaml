@@ -1,0 +1,99 @@
+# ============================================================
+# 亚马逊棋博弈系统 - 正式训练配置（RTX Pro 6000 / Blackwell）
+#
+# 与 config.yaml 的区别：正式大模型 + 正式训练超参。
+#   - 网络：13 残差块 / 256 滤波器（v2.0 锁定值）
+#   - MCTS：800 次模拟（自对弈用 GPU 批量后端）
+#   - 训练：200 局/cycle × 100 cycle，批大小 512
+# 使用方式：python3 main.py --mode train --config config_formal.yaml
+# ============================================================
+
+# --- 游戏规则 ---
+game:
+  board_size: 10
+  num_amazons: 4
+
+# --- 搜索引擎选择 ---
+engine:
+  type: "auto"                  # "auto"（有模型→MCTS，否则 alpha-beta）/ "mcts" / "alphabeta"
+  model_path: "models/best_model.pt"
+
+# --- Alpha-Beta 搜索 ---
+alphabeta:
+  max_depth: 5
+  time_budget_ms: 15000
+  use_transposition_table: true
+  use_iterative_deepening: true
+  use_move_ordering: true
+  transposition_table_size: 1048576
+
+# --- 局面评估 ---
+evaluator:
+  type: "heuristic"               # "heuristic"（启发式，快速）或 "monte_carlo"（蒙特卡洛，慢）
+  num_simulations: 100            # 仅 monte_carlo 模式使用
+
+# --- MCTS 搜索 (第二阶段) ---
+mcts:
+  num_simulations: 800            # 每次搜索的模拟次数（正式值）
+  c_puct: 1.0
+  temperature: 0.0                # 正式对弈贪心
+  self_play_temperature: 1.0      # 自我对弈前 30 步
+  dirichlet_alpha: 0.3
+  dirichlet_epsilon: 0.25
+
+# --- 深度网络 (第二阶段) ---
+network:
+  input_channels: 6
+  num_residual_blocks: 13         # 正式：13 残差块（v2.0 锁定值）
+  num_filters: 256                # 正式：256 滤波器
+  board_feature_dim: 256
+  move_embedding_dim: 128
+  hidden_dim: 128
+  model_path: "models/best_model.pt"
+
+# --- 训练 (第二阶段) ---
+training:
+  device: "cuda"                # "cuda" 或 "cpu"
+  batch_size: 512
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0001
+  lr_schedule: "cosine"
+  training_steps_per_cycle: 1000
+  replay_buffer_capacity: 300000
+  self_play_games_per_cycle: 200   # 正式：200 局/cycle
+  eval_games: 100                  # 正式：100 局对抗评估
+  eval_win_rate_threshold: 0.55
+  num_training_cycles: 100         # 正式：100 cycle
+  eval_every: 10
+  checkpoint_every: 10
+  parallel: false                  # GPU 后端自含并行，CPU 池关闭
+  num_workers: 0                   # 仅 cpu 后端生效（此处忽略）
+  self_play_backend: "gpu"         # "gpu"=GPU 批量 MCTS / "cpu"=多进程 CPU 池
+  gpu_batch_size: 200              # 并发局数上限（= 每次 GPU 前向 board 数）；≥ games/cycle 即可单批跑完
+
+# --- 开局库 ---
+opening_book:
+  enabled: false
+  book_path: "src/opening_book/data/opening_book.json"
+
+# --- 残局库 ---
+endgame:
+  enabled: false
+  tablebase_path: "src/endgame/data/tablebase.pkl"
+  max_pieces: 3
+  max_empty_squares: 15
+
+# --- GUI ---
+gui:
+  cell_size: 60
+  piece_radius: 22
+  board_color: "#DEB887"
+  default_mode: "HUMAN_VS_AI"
+
+# --- 日志 ---
+logging:
+  level: "INFO"
+  game_log_enabled: true
+  game_log_path: "logs/games/"
+  search_stats_enabled: true
