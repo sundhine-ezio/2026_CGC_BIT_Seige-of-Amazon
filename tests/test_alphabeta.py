@@ -1,13 +1,21 @@
 """ai/alphabeta.py 的单元测试。"""
 
-import time
 import pytest
-from src.ai.alphabeta import AlphaBetaEngine, TimeoutError
+
+from src.ai.alphabeta import AlphaBetaEngine
 from src.ai.evaluator import MonteCarloEvaluator
 from src.game.board import Board
 from src.game.constants import BLACK, BURNED, EMPTY, WHITE
 from src.game.move import Move
 from src.game.rules import Rules
+
+# 每步搜索预算。本文件用 MonteCarloEvaluator，它单次评估要跑几十局随机
+# playout（实测 1~9 秒），原先 30000~60000ms 的预算让整份文件耗时 3.5 分钟
+# 以上（import 层还曾因它 15 分钟跑不完）。这些用例的断言只要求"返回合法
+# 走法/非 None"，降到秒级即可保持覆盖，把整份文件压到 30 秒内。
+TEST_BUDGET_MS: float = 2000.0
+# 迭代加深/DEPTH 相关用例需要稍长预算以便走完前几层
+DEEPER_BUDGET_MS: float = 5000.0
 
 
 @pytest.fixture
@@ -17,7 +25,7 @@ def engine() -> AlphaBetaEngine:
     return AlphaBetaEngine(
         evaluator=evaluator,
         max_depth=3,
-        time_budget_ms=30000.0,
+        time_budget_ms=TEST_BUDGET_MS,
         use_transposition_table=True,
         use_iterative_deepening=True,
     )
@@ -29,7 +37,7 @@ class TestAlphaBetaBasics:
     def test_search_returns_legal_move(self, engine: AlphaBetaEngine) -> None:
         """搜索结果应为合法走法。"""
         board: Board = Board()
-        move: Move = engine.search(board, time_budget_ms=10000.0)
+        move: Move = engine.search(board, time_budget_ms=TEST_BUDGET_MS)
         legal_moves: list[Move] = Rules.get_legal_moves(board)
         legal_strings: set[str] = {m.to_string() for m in legal_moves}
         assert move.to_string() in legal_strings
@@ -45,7 +53,7 @@ class TestAlphaBetaBasics:
     def test_depth_reached(self, engine: AlphaBetaEngine) -> None:
         """带充足时间的搜索应达到目标深度。"""
         board: Board = Board()
-        engine.search(board, time_budget_ms=60000.0)
+        engine.search(board, time_budget_ms=DEEPER_BUDGET_MS)
         stats = engine.get_stats()
         # 至少达到 depth=1
         assert stats.depth_reached >= 1
@@ -58,8 +66,7 @@ class TestAlphaBetaBasics:
     def test_reset_clears_transposition(self, engine: AlphaBetaEngine) -> None:
         """reset 应清空置换表状态。"""
         board: Board = Board()
-        engine.search(board, time_budget_ms=5000.0)
-        stats_before_reset = engine.get_stats()
+        engine.search(board, time_budget_ms=TEST_BUDGET_MS)
         engine.reset()
         stats_after_reset = engine.get_stats()
         assert stats_after_reset.nodes_visited == 0
@@ -93,11 +100,11 @@ class TestBasicTactics:
 
         evaluator: MonteCarloEvaluator = MonteCarloEvaluator(num_simulations=30)
         engine2: AlphaBetaEngine = AlphaBetaEngine(
-            evaluator=evaluator, max_depth=3, time_budget_ms=30000.0,
+            evaluator=evaluator, max_depth=3, time_budget_ms=TEST_BUDGET_MS,
             use_iterative_deepening=False,
         )
 
-        move: Move = engine2.search(b, time_budget_ms=30000.0)
+        move: Move = engine2.search(b, time_budget_ms=TEST_BUDGET_MS)
         # 至少返回合法走法
         legal_moves: list[Move] = Rules.get_legal_moves(b)
         legal_strings: set[str] = {m.to_string() for m in legal_moves}
@@ -109,10 +116,10 @@ class TestBasicTactics:
         board: Board = Board()
         evaluator: MonteCarloEvaluator = MonteCarloEvaluator(num_simulations=20)
         engine2: AlphaBetaEngine = AlphaBetaEngine(
-            evaluator=evaluator, max_depth=2, time_budget_ms=30000.0,
+            evaluator=evaluator, max_depth=2, time_budget_ms=TEST_BUDGET_MS,
             use_iterative_deepening=False,
         )
-        move: Move = engine2.search(board, time_budget_ms=30000.0)
+        move: Move = engine2.search(board, time_budget_ms=TEST_BUDGET_MS)
         assert move is not None
 
         # 执行走法后己方仍有合法走法
@@ -129,18 +136,18 @@ class TestIterativeDeepening:
 
         evaluator_d2: MonteCarloEvaluator = MonteCarloEvaluator(num_simulations=20)
         engine_d2: AlphaBetaEngine = AlphaBetaEngine(
-            evaluator=evaluator_d2, max_depth=2, time_budget_ms=60000.0,
+            evaluator=evaluator_d2, max_depth=2, time_budget_ms=DEEPER_BUDGET_MS,
             use_iterative_deepening=False,
         )
-        move_d2: Move = engine_d2.search(board.clone(), time_budget_ms=60000.0)
+        move_d2: Move = engine_d2.search(board.clone(), time_budget_ms=DEEPER_BUDGET_MS)
 
         board2: Board = board.clone()
         evaluator_d3: MonteCarloEvaluator = MonteCarloEvaluator(num_simulations=20)
         engine_d3: AlphaBetaEngine = AlphaBetaEngine(
-            evaluator=evaluator_d3, max_depth=3, time_budget_ms=60000.0,
+            evaluator=evaluator_d3, max_depth=3, time_budget_ms=DEEPER_BUDGET_MS,
             use_iterative_deepening=False,
         )
-        move_d3: Move = engine_d3.search(board2, time_budget_ms=60000.0)
+        move_d3: Move = engine_d3.search(board2, time_budget_ms=DEEPER_BUDGET_MS)
 
         # 两者都应合法
         legal_moves: list[Move] = Rules.get_legal_moves(board)

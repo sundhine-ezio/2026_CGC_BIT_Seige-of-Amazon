@@ -11,7 +11,6 @@ import numpy as np
 from src.ai.mcts import MCTSEngine, decode_move_key
 from src.game.board import Board
 from src.game.constants import BLACK, WHITE
-from src.game.move import Move
 from src.game.rules import Rules
 from src.network.config import MCTSConfig
 from src.network.model import AmazonsNet
@@ -77,19 +76,33 @@ def _self_play_one_game(model: AmazonsNet, mcts_config: MCTSConfig) -> list[Samp
     return samples
 
 
+# 评估对局的开局随机化步数：前 N 步按访问分布采样（temperature=1），之后转贪心。
+#
+# 为什么必须随机化：MCTS 在 temperature=0 下是确定性的，同一对模型会走出
+# 完全相同的棋。实测（best_model.pt，100 模拟）连下 6 局，每局都是"白胜、
+# 65 步"、走法序列一字不差 —— 于是 num_games 局评估的信息量退化为 1 局，
+# new_win_rate 只能取到 0/0.5/1.0 这类离散值，模型替换决策建立在抛硬币上。
+DEFAULT_EVAL_OPENING_PLIES: int = 8
+
+
 def pit_evaluate(
     new_model: AmazonsNet,
     old_model: AmazonsNet,
     num_games: int,
     mcts_config: MCTSConfig,
+    opening_plies: int = DEFAULT_EVAL_OPENING_PLIES,
 ) -> dict[str, float]:
-    """新网络 vs 旧网络对抗评估（temperature=0，各执一半白/黑）。
+    """新网络 vs 旧网络对抗评估（各执一半白/黑）。
+
+    前 ``opening_plies`` 步按访问分布采样以随机化开局（见
+    DEFAULT_EVAL_OPENING_PLIES 的说明），其余步 temperature=0 贪心。
 
     Args:
         new_model: 待评估的新网络
         old_model: 基线旧网络
         num_games: 对弈局数
         mcts_config: MCTS 搜索超参数
+        opening_plies: 开局随机化步数；0 表示全程贪心（确定性，勿用）
 
     Returns:
         {"new_win": N, "old_win": N, "new_win_rate": float}
@@ -107,7 +120,7 @@ def pit_evaluate(
             num_simulations=mcts_config.num_simulations,
             c_puct=mcts_config.c_puct,
         )
-        winner = _play_game(white_engine, black_engine)
+        winner = _play_game(white_engine, black_engine, opening_plies)
         if (winner == WHITE and new_is_white) or (winner == BLACK and not new_is_white):
             new_wins += 1
 
@@ -118,11 +131,25 @@ def pit_evaluate(
     }
 
 
-def _play_game(white_engine: MCTSEngine, black_engine: MCTSEngine) -> int:
-    """用两个引擎对弈一局，返回胜者（WHITE 或 BLACK）。"""
+def _play_game(
+    white_engine: MCTSEngine, black_engine: MCTSEngine, opening_plies: int = 0
+) -> int:
+    """用两个引擎对弈一局，返回胜者（WHITE 或 BLACK）。
+
+    Args:
+        white_engine: 执白引擎
+        black_engine: 执黑引擎
+        opening_plies: 前若干步按访问分布采样（temperature=1）以随机化开局，
+            之后 temperature=0 贪心。为 0 时全程贪心 → 每局走法完全相同。
+    """
     board = Board()
+    ply = 0
     while not Rules.is_game_over(board):
         engine = white_engine if board.get_current_player() == WHITE else black_engine
-        move: Move = engine.search(board.clone(), 0.0)
+        if ply < opening_plies:
+            _, move = engine.get_policy(board.clone(), temperature=1.0)
+        else:
+            move = engine.search(board.clone(), 0.0)
         board.make_move(move)
+        ply += 1
     return Rules.get_winner(board)

@@ -1,0 +1,73 @@
+# ============================================================
+# 极小规模冒烟配置——用于在新机器上 1 分钟内验证「环境 + 训练闭环 + 多进程
+# GPU self-play」是否跑通，再决定要不要启动正式训练。
+#
+# 用法：
+#   PYTHONPATH= python main.py --mode train --config config_smoke.yaml
+#
+# 与正式训练的区别：网络 2 块/32 滤波（约 1 万参数）、MCTS 8 次模拟、4 局
+# self-play、2 步训练、1 个 cycle → 几十秒即可跑完一整轮闭环。
+# 输出写到 models/smoke/，不会碰你原来的 checkpoint。
+# ============================================================
+
+# --- 游戏规则 ---
+game:
+  board_size: 10
+  num_amazons: 4
+
+# --- 搜索引擎选择 ---
+engine:
+  type: "auto"
+  model_path: "models/best_model.pt"   # 不参与训练，仅为兼容配置结构
+
+# --- MCTS ---
+mcts:
+  num_simulations: 8
+  c_puct: 1.0
+  temperature: 0.0
+  self_play_temperature: 1.0
+  dirichlet_alpha: 0.3
+  dirichlet_epsilon: 0.25
+
+# --- 网络：小到能秒级跑完 ---
+network:
+  input_channels: 6
+  num_residual_blocks: 2
+  num_filters: 32
+  board_feature_dim: 64
+  move_embedding_dim: 32
+  hidden_dim: 32
+  # 指向一个**不存在**的路径 → 从头训练（不会去加载 4块/128 的旧权重）
+  model_path: "models/smoke_scratch.pt"
+
+# --- 训练 ---
+training:
+  device: "cuda"
+  batch_size: 8
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0001
+  lr_schedule: "cosine"
+  training_steps_per_cycle: 2
+  replay_buffer_capacity: 1000
+  self_play_games_per_cycle: 4
+  eval_games: 2
+  eval_win_rate_threshold: 0.55
+  num_training_cycles: 1
+  eval_every: 1
+  checkpoint_every: 1
+  parallel: false                    # GPU 池自含并行，此项忽略
+  num_workers: 0
+  self_play_backend: "gpu_parallel"  # 多进程 + GPU
+  gpu_batch_size: 2                  # 每 worker 并发局数
+  gpu_self_play_devices: "0"         # 只用一个卡做冒烟
+  gpu_self_play_workers: 2           # 2 个 worker
+  gpu_games_per_round: 2             # 每 worker 每轮 2 局 → 一轮 4 局
+  checkpoint_dir: "models/smoke"     # 独立目录，不覆盖正式 checkpoint
+
+# --- 日志 ---
+logging:
+  level: "INFO"
+  game_log_enabled: false
+  game_log_path: "logs/games/"
+  search_stats_enabled: false

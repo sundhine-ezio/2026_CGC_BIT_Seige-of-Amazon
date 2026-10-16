@@ -22,11 +22,13 @@ from src.ai.mcts import (
     decode_move_key,
 )
 from src.game.board import Board
+from src.game.constants import WHITE
 from src.game.move import Move
 from src.game.rules import Rules
 from src.network.config import MCTSConfig
 from src.network.model import AmazonsNet
 from src.network.replay_buffer import Sample
+from src.network.selfplay import DEFAULT_EVAL_OPENING_PLIES
 
 
 def _batched_search(
@@ -182,3 +184,104 @@ def generate_self_play_data_gpu(
             samples_all.append(sim.samples)
 
     return samples_all
+
+
+def play_eval_games_gpu(
+    model_a: AmazonsNet,
+    model_b: AmazonsNet,
+    num_games: int,
+    mcts_config: MCTSConfig,
+    batch_size: int = 16,
+    opening_plies: int = DEFAULT_EVAL_OPENING_PLIES,
+    first_game_a_is_white: bool = True,
+) -> list[tuple[int, bool]]:
+    """A/B 对战评估（批量、双模型），返回每局的 (胜方, A是否执白)。
+
+    口径与 selfplay.pit_evaluate 一致：各执一半白/黑（抵消先手优势），
+    前 opening_plies 步按访问分布采样（temperature=1）以随机化开局，之后贪心。
+    随机化是必须的——全程贪心时同一对模型每局走法完全相同，N 局的信息量会
+    退化成 1 局。
+
+    与串行评估的区别：这里把一批对局以锁步方式并行推进，每步按"该谁走"把
+    局面分成两组、各做一次批量 MCTS。因此评估速度提升约等于并发度，让评估
+    从整个训练闭环里最贵的一环（串行 40 局约 40 分钟）变成可忽略的开销。
+
+    Args:
+        model_a: A 方网络（目标设备上）
+        model_b: B 方网络（目标设备上，可与 A 同卡）
+        num_games: 对局数
+        mcts_config: MCTS 超参数
+        batch_size: 并发推进的局数
+        opening_plies: 开局随机化步数
+        first_game_a_is_white: 第一局 A 是否执白；同批内交替先后手。
+            多 worker 时分奇偶传入，可保证全局黑白局数平衡。
+
+    Returns:
+        [(winner, a_is_white), ...]，winner 为 WHITE/BLACK
+    """
+
+    class _EvalGame:
+        """一条评估对局的推进状态。"""
+
+        def __init__(self, a_is_white: bool) -> None:
+            self.a_is_white = a_is_white
+            self.board: Board = Board()
+            self.ply = 0
+            self.finished = False
+            self.winner = 0
+
+        def actor_is_a(self) -> bool:
+            """当前该走的是否 A 方。"""
+            return (self.board.get_current_player() == WHITE) == self.a_is_white
+
+        def temperature(self) -> float:
+            """开局若干步采样，之后贪心。"""
+            return 1.0 if self.ply < opening_plies else 0.0
+
+        def step(self, move: Move) -> None:
+            self.board.make_move(move)
+            self.ply += 1
+            if Rules.is_game_over(self.board):
+                self.finished = True
+                self.winner = Rules.get_winner(self.board)
+
+    results: list[tuple[int, bool]] = []
+    made = 0
+    while made < num_games:
+        chunk = min(batch_size, num_games - made)
+        # 交替先后手：A 执白一局、执黑一局
+        batch: list[_EvalGame] = []
+        for i in range(chunk):
+            a_is_white = (i % 2 == 0) if first_game_a_is_white else (i % 2 == 1)
+            batch.append(_EvalGame(a_is_white=a_is_white))
+        made += chunk
+
+        active = [g for g in batch if not g.finished]
+        while active:
+            a_games = [g for g in active if g.actor_is_a()]
+            b_games = [g for g in active if not g.actor_is_a()]
+            if a_games:
+                moves_a = _batched_search(
+                    [g.board for g in a_games],
+                    model_a,
+                    mcts_config,
+                    [g.temperature() for g in a_games],
+                    [False] * len(a_games),
+                )
+                for game, (_, move) in zip(a_games, moves_a, strict=True):
+                    game.step(move)
+            if b_games:
+                moves_b = _batched_search(
+                    [g.board for g in b_games],
+                    model_b,
+                    mcts_config,
+                    [g.temperature() for g in b_games],
+                    [False] * len(b_games),
+                )
+                for game, (_, move) in zip(b_games, moves_b, strict=True):
+                    game.step(move)
+            active = [g for g in batch if not g.finished]
+
+        results.extend((g.winner, g.a_is_white) for g in batch)
+
+    return results

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from typing import Any
 
 from src.ai.alphabeta import AlphaBetaEngine
@@ -322,6 +323,51 @@ def run_console_mode(engine_white: Engine, engine_black: Engine) -> None:
     print(f"{'=' * 50}")
 
 
+# =============================================================================
+# 比赛模式时间分配
+# =============================================================================
+
+# 总时间安全系数：整局最多用掉预算的这个比例
+COMPETITION_SAFETY: float = 0.8
+# 预估整局步数（亚马逊棋通常 60~120 步），用于把剩余时间均摊到剩余步数
+COMPETITION_EXPECTED_MOVES: int = 100
+# 剩余步数下限，防止末盘（战局拖长时）每步时间反而反弹
+COMPETITION_MIN_MOVES_LEFT: int = 20
+# 传给引擎的最小预算。**不可为 0**：AlphaBetaEngine 把 <=0 解释为"不限时"，
+# 会导致单步无限搜索直至超时判负。
+COMPETITION_MIN_MOVE_MS: float = 1.0
+
+
+def _competition_move_budget_ms(
+    elapsed_ms: float, moves_played: int, total_time_ms: float
+) -> float:
+    """按剩余时间与预估剩余步数，动态分配本步搜索预算。
+
+    采用「剩余时间固定比例」策略：每步至多花掉剩余时间的
+    COMPETITION_SAFETY / COMPETITION_MIN_MOVES_LEFT，因此即使实际步数
+    远超预估，累计用时也不会超过总预算（几何级数收敛）。
+
+    Args:
+        elapsed_ms: 本局已用时间（毫秒）
+        moves_played: 本局已下步数
+        total_time_ms: 本局总时间预算（毫秒）
+
+    Returns:
+        本步搜索时间预算（毫秒），恒为正数
+    """
+    remaining_ms: float = total_time_ms - elapsed_ms
+    if remaining_ms <= 0:
+        # 已超预算：只给最小预算尽快出一个合法走法，避免拖延
+        return COMPETITION_MIN_MOVE_MS
+
+    moves_left: int = max(
+        COMPETITION_EXPECTED_MOVES - moves_played, COMPETITION_MIN_MOVES_LEFT
+    )
+    budget_ms: float = remaining_ms * COMPETITION_SAFETY / moves_left
+    # 单步预算不超过剩余时间 → 累计用时不可能超过总预算；下限保证不为 0
+    return min(max(budget_ms, COMPETITION_MIN_MOVE_MS), remaining_ms)
+
+
 def run_competition_mode(engine: Engine, args: argparse.Namespace) -> None:
     """比赛模式——标准输入输出通信。
 
@@ -330,6 +376,9 @@ def run_competition_mode(engine: Engine, args: argparse.Namespace) -> None:
       2. 若己方执白，先搜索并输出走法
       3. 循环: 读对手走法 → 搜索 → 输出己方走法
 
+    每步时间预算按剩余时间动态分配（见 _competition_move_budget_ms），
+    保证整局总用时不超过 --time 指定的秒数。
+
     Args:
         engine: AI 搜索引擎
         args: 命令行参数
@@ -337,15 +386,22 @@ def run_competition_mode(engine: Engine, args: argparse.Namespace) -> None:
     board: Board = Board()
     my_color: int = 1 if args.color == "white" else -1  # WHITE=1, BLACK=-1
     total_time_ms: float = float(args.time * 1000)
-    time_per_move_ms: float = total_time_ms / 100.0  # 预估每局约 50-80 步
+    start_time: float = time.time()
+    moves_played: int = 0
 
     print("READY", flush=True)
 
     # 若己方执白 → 先走
     if my_color == 1:
-        move: Move = engine.search(board.clone(), time_per_move_ms)
+        move: Move = engine.search(
+            board.clone(),
+            _competition_move_budget_ms(
+                (time.time() - start_time) * 1000.0, moves_played, total_time_ms
+            ),
+        )
         print(move.to_string(), flush=True)
         board.make_move(move)
+        moves_played += 1
 
     # 主循环
     while not Rules.is_game_over(board):
@@ -359,15 +415,30 @@ def run_competition_mode(engine: Engine, args: argparse.Namespace) -> None:
             print(f"ERROR: 非法走法格式: '{line}'", file=sys.stderr, flush=True)
             continue
 
+        # 校验走法确实符合规则。格式合法但不合法的走法（例如箭落在自己落脚的
+        # 格子上）会污染棋盘内部状态，使后续搜索抛 KeyError 直接崩掉程序，
+        # 比赛中操作员输错一行即致命，必须在此拦下。
+        if opponent_move not in set(Rules.get_legal_moves(board)):
+            print(
+                f"ERROR: 非法走法（不符合规则）: '{line}'", file=sys.stderr, flush=True
+            )
+            continue
+
         board.make_move(opponent_move)
 
         if Rules.is_game_over(board):
             print("RESIGN", flush=True)
             break
 
-        my_move: Move = engine.search(board.clone(), time_per_move_ms)
+        my_move: Move = engine.search(
+            board.clone(),
+            _competition_move_budget_ms(
+                (time.time() - start_time) * 1000.0, moves_played, total_time_ms
+            ),
+        )
         print(my_move.to_string(), flush=True)
         board.make_move(my_move)
+        moves_played += 1
 
         if Rules.is_game_over(board):
             break
@@ -409,25 +480,7 @@ def run_train_mode(config: dict[str, Any], args: argparse.Namespace) -> None:
         dirichlet_alpha=float(mcts_cfg.get("dirichlet_alpha", 0.3)),
         dirichlet_epsilon=float(mcts_cfg.get("dirichlet_epsilon", 0.25)),
     )
-    train_config = TrainingConfig(
-        batch_size=int(training_cfg.get("batch_size", 512)),
-        learning_rate=float(training_cfg.get("learning_rate", 0.01)),
-        momentum=float(training_cfg.get("momentum", 0.9)),
-        weight_decay=float(training_cfg.get("weight_decay", 1e-4)),
-        lr_schedule=str(training_cfg.get("lr_schedule", "cosine")),
-        training_steps_per_cycle=int(training_cfg.get("training_steps_per_cycle", 1000)),
-        replay_buffer_capacity=int(training_cfg.get("replay_buffer_capacity", 300000)),
-        self_play_games_per_cycle=int(training_cfg.get("self_play_games_per_cycle", 200)),
-        eval_games=int(training_cfg.get("eval_games", 100)),
-        eval_win_rate_threshold=float(training_cfg.get("eval_win_rate_threshold", 0.55)),
-        num_training_cycles=int(training_cfg.get("num_training_cycles", 100)),
-        eval_every=int(training_cfg.get("eval_every", 10)),
-        checkpoint_every=int(training_cfg.get("checkpoint_every", 10)),
-        parallel=bool(training_cfg.get("parallel", False)),
-        num_workers=int(training_cfg.get("num_workers", 0)),
-        self_play_backend=str(training_cfg.get("self_play_backend", "cpu")),
-        gpu_batch_size=int(training_cfg.get("gpu_batch_size", 64)),
-    )
+    train_config = TrainingConfig.from_dict(training_cfg)
 
     # 可选：从已有 checkpoint 继续训练
     model_path: str = _resolve_model_path(config, args)

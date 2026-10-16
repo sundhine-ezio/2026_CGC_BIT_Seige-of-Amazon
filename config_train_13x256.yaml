@@ -1,0 +1,99 @@
+# ============================================================
+# 正式训练配置：13 残差块 / 256 滤波器，**从头训练**
+#
+# 设计依据（都有实测支撑）：
+#   - 自对弈瓶颈是 CPU 单核走法生成，实测 GPU 利用率仅 6.4%。因此用
+#     self_play_backend: "gpu_parallel"（多进程 + GPU），这是唯一能同时吃满
+#     多核与双卡的后端。用旧的 "gpu" 后端会只吃 1 核，速度与笔记本无异。
+#   - pit 评估是串行单进程、整个闭环最贵的一环（MCTS@400 约 0.53 秒/步），
+#     因此用 eval_num_simulations 单独把评估降到 400 模拟，换来更勤的观测频率。
+#   - checkpoint 写入独立目录 models/run13x256/，绝不覆盖原有的
+#     models/best_model.pt（那是 4块/128 的旧模型，要留作对比基线）。
+#
+# 用法：
+#   PYTHONPATH= python main.py --mode train --config config_train_13x256.yaml
+#   建议先用 nohup 挂后台，日志见 logs/
+# ============================================================
+
+# --- 游戏规则 ---
+game:
+  board_size: 10
+  num_amazons: 4
+
+# --- 搜索引擎（训练不使用，仅为兼容配置结构）---
+engine:
+  type: "alphabeta"                   # 比赛请用 alpha-beta；MCTS 待训练后再评估
+  model_path: "models/best_model.pt"
+
+# --- Alpha-Beta（保底方案，不参与训练）---
+alphabeta:
+  max_depth: 5
+  time_budget_ms: 15000
+  use_transposition_table: true
+  use_iterative_deepening: true
+  use_move_ordering: true
+  transposition_table_size: 1048576
+
+# --- MCTS ---
+mcts:
+  num_simulations: 800                # self-play 的模拟次数
+  c_puct: 1.0
+  temperature: 0.0
+  self_play_temperature: 1.0          # 自我对弈前 30 步用温度采样
+  dirichlet_alpha: 0.3
+  dirichlet_epsilon: 0.25
+
+# --- 网络：正式规模 ---
+network:
+  input_channels: 6
+  num_residual_blocks: 13
+  num_filters: 256
+  board_feature_dim: 256
+  move_embedding_dim: 128
+  hidden_dim: 128
+  # 指向**不存在**的路径 → 从头训练。切勿改成 models/best_model.pt：
+  # 那是 4块/128 的权重，与这里的 13块/256 不兼容，加载会 size mismatch 崩溃。
+  model_path: "models/run13x256_scratch.pt"
+
+# --- 训练 ---
+training:
+  device: "cuda"
+  batch_size: 512
+  learning_rate: 0.01
+  momentum: 0.9
+  weight_decay: 0.0001
+  lr_schedule: "cosine"
+  training_steps_per_cycle: 1000
+  replay_buffer_capacity: 300000
+  self_play_games_per_cycle: 200      # 每 cycle 目标局数（一轮实际产量见下）
+  eval_games: 40                      # 评估局数（串行，约 0.5-1 分钟/局）
+  eval_num_simulations: 400           # 评估用模拟次数（比 self-play 便宜一半）
+  eval_win_rate_threshold: 0.55
+  num_training_cycles: 100
+  eval_every: 5                       # 每 5 cycle 一次评估，便于早期发现问题
+  checkpoint_every: 5
+  parallel: false                     # gpu_parallel 自含并行，此项忽略
+  num_workers: 0
+  self_play_backend: "gpu_parallel"   # 多进程 + GPU（关键）
+  gpu_batch_size: 8                   # 每个 worker 内并发推进的局数
+  # GPU1 上有别人的任务（实测 67% 利用率 / 8GB 显存，容器外看不到进程），
+  # 因此只用 GPU0。若确认 GPU1 空出来了，可改成 "0,1" 使总时长约减半。
+  gpu_self_play_devices: "0"
+  gpu_self_play_workers: 32           # 先按 32 起跑；务必用 bench 脚本实测后调整
+  gpu_games_per_round: 7              # 每 worker 每轮局数 → 一轮 32×7 = 224 局
+  checkpoint_dir: "models/run13x256"  # 独立目录，不碰原有 checkpoint
+
+# --- 开局库 / 残局库（未启用）---
+opening_book:
+  enabled: false
+  book_path: "src/opening_book/data/opening_book.json"
+endgame:
+  enabled: false
+  tablebase_path: "src/endgame/data/tablebase.pkl"
+
+# --- 日志 ---
+logging:
+  level: "INFO"
+  game_log_enabled: false
+  game_log_path: "logs/games/"
+  search_stats_enabled: false

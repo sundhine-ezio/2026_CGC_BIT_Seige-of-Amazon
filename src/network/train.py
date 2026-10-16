@@ -10,6 +10,7 @@ import copy
 import os
 import signal
 import sys
+from dataclasses import replace
 from typing import Any, Protocol
 
 import numpy as np
@@ -19,10 +20,27 @@ import torch.nn.functional as F  # noqa: N812  # torch 惯用别名
 from src.network.config import MCTSConfig, NetworkConfig, TrainingConfig
 from src.network.model import AmazonsNet
 from src.network.move_encoding import moves_to_features
-from src.network.replay_buffer import ReplayBuffer
+from src.network.replay_buffer import ReplayBuffer, Sample
 from src.network.selfplay import generate_self_play_data, pit_evaluate
 from src.network.selfplay_gpu import generate_self_play_data_gpu
+from src.network.selfplay_gpu_pool import GpuSelfPlayPool, parse_devices
 from src.network.selfplay_parallel import ParallelSelfPlayPool
+
+
+class _SelfPlayPool(Protocol):
+    """self-play 工作池的公共接口（CPU 池与 GPU 池都满足）。"""
+
+    def broadcast_weights(self, state_dict: dict[str, Any]) -> None:
+        """广播最新权重（CPU state_dict）。"""
+        ...
+
+    def collect_games(self, num_games: int) -> list[list[Sample]]:
+        """收集整局样本。"""
+        ...
+
+    def shutdown(self) -> None:
+        """停止所有 worker。"""
+        ...
 
 
 class _Scheduler(Protocol):
@@ -161,13 +179,51 @@ def train_loop(
     # 显式改为行缓冲，使每个 cycle 的 print 立即落盘。
     sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
 
-    # self-play 后端选择："gpu" = 主进程批量 MCTS（GPU 批量前向）；"cpu" = 多进程池。
-    use_gpu_selfplay = config.self_play_backend == "gpu"
+    # self-play 后端选择：
+    #   "gpu_parallel" 多进程 + GPU（多核大机器首选；唯一能同时吃满多核与显卡的）
+    #   "gpu"          单进程批量 MCTS（实测 GPU 利用率仅约 6%，CPU 单核是瓶颈）
+    #   "cpu"          多进程 CPU 池，网络在 CPU 上推理
+    backend = config.self_play_backend
+    use_gpu_selfplay = backend == "gpu"
 
-    # 多进程并行自我对弈池（可选）。必须在 model.to(cuda) 之前创建：
-    # fork 发生在 CUDA 初始化前，避免子进程继承 CUDA 上下文导致死锁/崩溃。
-    pool: ParallelSelfPlayPool | None = None
-    if config.parallel and not use_gpu_selfplay:
+    pool: _SelfPlayPool | None = None
+    # GPU 池单独留一个强类型引用：评估要调它的并行 evaluate（CPU 池没有这个方法）
+    gpu_pool: GpuSelfPlayPool | None = None
+    if backend == "gpu_parallel":
+        devices = parse_devices(config.gpu_self_play_devices)
+        if config.gpu_self_play_workers > 0:
+            num_workers = config.gpu_self_play_workers
+        else:
+            # 实测约 16 个单进程才能喂饱一张卡（GPU 利用率 6.4% × 16 ≈ 100%）
+            num_workers = 16 * len(devices)
+        # 每个 worker 每轮的局数。显式配置优先；否则按每 cycle 目标局数摊分并
+        # 向上取整，保证一轮产量（= worker 数 × 每轮局数）≥ 目标局数。
+        if config.gpu_games_per_round > 0:
+            games_per_round = config.gpu_games_per_round
+        else:
+            games_per_round = max(
+                1, -(-config.self_play_games_per_cycle // num_workers)
+            )
+        gpu_pool = GpuSelfPlayPool(
+            num_workers,
+            model.config,
+            mcts_config,
+            devices,
+            batch_size=config.gpu_batch_size,
+            games_per_round=games_per_round,
+        )
+        pool = gpu_pool
+        # 首次广播：触发第一轮自对弈（cycle 1 的 collect_games 等它）
+        pool.broadcast_weights(_cpu_state_dict(model))
+        print(
+            f"[train] GPU 多进程 self-play: {num_workers} workers / "
+            f"GPU {devices} / 每 worker batch {config.gpu_batch_size} / "
+            f"每轮 {gpu_pool.round_games} 局",
+            flush=True,
+        )
+    elif config.parallel and not use_gpu_selfplay:
+        # 多进程 CPU 池。必须在 model.to(cuda) 之前创建：fork 发生在 CUDA
+        # 初始化前，避免子进程继承 CUDA 上下文导致死锁/崩溃。
         num_workers = (
             config.num_workers if config.num_workers > 0 else (os.cpu_count() or 1)
         )
@@ -194,7 +250,7 @@ def train_loop(
     replay_buffer = ReplayBuffer(config.replay_buffer_capacity)
     best_model = copy.deepcopy(model)
     best_win_rate = 0.0
-    checkpoint_dir = "models"
+    checkpoint_dir = config.checkpoint_dir
 
     try:
         for cycle in range(1, config.num_training_cycles + 1):
@@ -226,17 +282,37 @@ def train_loop(
                 f"total_loss={losses['total_loss']:.4f}"
             )
 
-            if pool is not None:
-                pool.broadcast_weights(_cpu_state_dict(model))
-
             if cycle % config.eval_every == 0:
                 print(f"[train] pit evaluation ({config.eval_games} games)...")
-                result = pit_evaluate(
-                    model, best_model, config.eval_games, mcts_config
-                )
+                # 评估口径：单独调低模拟次数，用更便宜的方式换更勤的进度观测。
+                eval_sims = config.eval_num_simulations or mcts_config.num_simulations
+                if config.eval_num_simulations > 0:
+                    print(
+                        f"[train] （评估用 {config.eval_num_simulations} 模拟）",
+                        flush=True,
+                    )
+                if gpu_pool is not None:
+                    # 并行走 worker 池：同样的对局在 GPU 上批量推进，
+                    # 单局成本约降到 1/30，而且一轮能拿到更多局（统计更可靠）
+                    result = gpu_pool.evaluate(
+                        _cpu_state_dict(model),
+                        _cpu_state_dict(best_model),
+                        config.eval_games,
+                        sims=eval_sims,
+                    )
+                else:
+                    eval_mcts_config = mcts_config
+                    if config.eval_num_simulations > 0:
+                        eval_mcts_config = replace(
+                            mcts_config, num_simulations=config.eval_num_simulations
+                        )
+                    result = pit_evaluate(
+                        model, best_model, config.eval_games, eval_mcts_config
+                    )
                 print(
                     f"[train] new_win_rate={result['new_win_rate']:.3f} "
-                    f"(threshold {config.eval_win_rate_threshold})"
+                    f"({int(result.get('games', config.eval_games))} 局, "
+                    f"threshold {config.eval_win_rate_threshold})"
                 )
                 if result["new_win_rate"] > config.eval_win_rate_threshold:
                     best_model = copy.deepcopy(model)
@@ -246,6 +322,11 @@ def train_loop(
                         os.path.join(checkpoint_dir, "best_model.pt"), cycle,
                     )
                     print(f"[train] new best model (win_rate={best_win_rate:.3f})")
+
+            # 广播放到评估之后：评估要靠 worker 池执行，先广播会让 worker
+            # 忙着跑自对弈、评估拿不到结果。
+            if pool is not None:
+                pool.broadcast_weights(_cpu_state_dict(model))
 
             if cycle % config.checkpoint_every == 0:
                 path = os.path.join(checkpoint_dir, f"checkpoint_cycle{cycle}.pt")
@@ -258,16 +339,33 @@ def train_loop(
 def save_checkpoint(
     model: AmazonsNet, optimizer: torch.optim.Optimizer, path: str, cycle: int
 ) -> None:
-    """保存模型 + 优化器 + 轮次到 .pt。"""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    """保存模型 + 优化器 + 轮次到 .pt（先写临时文件，再原子重命名）。
+
+    直接 torch.save 到目标路径时，若进程在写入途中被杀（kill -9 / 崩溃 /
+    断电），会留下一个被截断的损坏文件——对 best_model.pt 而言，等于同时
+    丢掉了旧的那份好模型。改为先写 ``<path>.tmp`` 再 ``os.replace``：重命名
+    在同一文件系统内是原子操作，中途失败也能保住原文件完好。
+
+    Args:
+        model: 模型
+        optimizer: 优化器
+        path: 目标路径
+        cycle: 当前轮次
+    """
+    directory: str = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    tmp_path: str = f"{path}.tmp"
     torch.save(
         {
             "cycle": cycle,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
         },
-        path,
+        tmp_path,
     )
+    os.replace(tmp_path, path)
 
 
 def load_checkpoint(path: str, config: NetworkConfig) -> AmazonsNet:

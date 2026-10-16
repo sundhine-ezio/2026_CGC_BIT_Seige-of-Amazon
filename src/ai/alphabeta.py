@@ -12,13 +12,12 @@ from typing import TYPE_CHECKING, Protocol
 from src.ai.engine import Engine
 from src.ai.transposition import TranspositionEntry, TranspositionTable
 from src.game.board import Board
-from src.game.constants import DRAW
 from src.game.move import Move
 from src.game.rules import Rules
 
 if TYPE_CHECKING:
-    from src.opening_book.book import OpeningBook
     from src.endgame.tablebase import Tablebase
+    from src.opening_book.book import OpeningBook
 
 
 class _Evaluator(Protocol):
@@ -51,6 +50,14 @@ class SearchStats:
     transposition_hits: int = 0
     depth_reached: int = 0
     time_elapsed_ms: float = 0.0
+
+
+# 根节点走法排序预算：最多花掉本步搜索预算的这个比例
+ORDERING_BUDGET_FRACTION: float = 0.3
+# 时间预算不限时（inf）时，排序阶段的绝对上限（毫秒）。
+# 防止慢评估器在排序阶段挂住：MonteCarloEvaluator(100) 单次评估约 4.8s，
+# 而开局有约 2176 个根走法，无上限时会耗时近 3 小时。
+ORDERING_MAX_MS: float = 2000.0
 
 
 class AlphaBetaEngine(Engine):
@@ -247,7 +254,9 @@ class AlphaBetaEngine(Engine):
 
         # 走法排序：优选走法在前，提高剪枝效率
         if self._use_move_ordering:
-            legal_moves = self._order_moves(board, legal_moves)
+            legal_moves = self._order_moves(
+                board, legal_moves, start_time, time_budget_ms
+            )
 
         best_move: Move = legal_moves[0]
         best_value: float = -float("inf")
@@ -258,12 +267,16 @@ class AlphaBetaEngine(Engine):
 
             board.make_move(move)
             try:
-                # 根玩家走子 → 轮到对方。_alpha_beta 返回对方最优胜率
+                # 根玩家走子 → 轮到对方。_alpha_beta 返回对方最优胜率。
+                # 根节点取 value = 1 - opponent_best 的最大值，等价于取
+                # opponent_best 的最小值，故把已找到的最小 opponent_best
+                # （= 1 - best_value）作为子节点的 beta 上界传下去，
+                # 后续兄弟走法一旦证明不优即可剪枝。
                 opponent_best: float = self._alpha_beta(
                     board,
                     depth - 1,
                     -float("inf"),
-                    float("inf"),
+                    1.0 - best_value,
                     start_time,
                     time_budget_ms,
                 )
@@ -315,12 +328,11 @@ class AlphaBetaEngine(Engine):
         if self._check_timeout(start_time, time_budget_ms):
             raise TimeoutError()
 
-        current_player: int = board.get_current_player()
-
-        # 终局
-        if Rules.is_game_over(board):
-            winner: int = Rules.get_winner(board)
-            return 1.0 if winner == current_player else 0.0
+        # 终局：无合法走法 → 当前玩家判负，直接返回 0.0。
+        # 用早停谓词而非 is_game_over 的全量生成，叶节点（占绝大多数）只付
+        # 一次"有/无走法"的检测成本，而不是生成全部 ~2000 个 Move。
+        if not Rules.has_any_legal_move(board):
+            return 0.0
 
         # 深度耗尽 → 叶节点评估
         if depth == 0:
@@ -400,7 +412,11 @@ class AlphaBetaEngine(Engine):
     # =========================================================================
 
     def _order_moves(
-        self, board: Board, moves: list[Move]
+        self,
+        board: Board,
+        moves: list[Move],
+        start_time: float,
+        time_budget_ms: float,
     ) -> list[Move]:
         """按启发式评估对走法排序，优选的走法排在前面。
 
@@ -411,9 +427,15 @@ class AlphaBetaEngine(Engine):
 
           排序按对方视角评估值升序（低分 = 对方不利 = 己方有利）。
 
+        排序只是启发式，不值得为它牺牲搜索时间：本方法最多花掉本步预算的
+        ORDERING_BUDGET_FRACTION（预算不限时时为 ORDERING_MAX_MS），
+        预算耗尽后剩余走法不评分、保持原顺序返回。
+
         Args:
             board: 当前棋盘状态（走子前，会被临时修改并在退出前恢复）
             moves: 待排序的走法列表
+            start_time: 搜索开始时间戳
+            time_budget_ms: 本步搜索时间预算
 
         Returns:
             排序后的走法列表（优选走法在前）
@@ -421,8 +443,20 @@ class AlphaBetaEngine(Engine):
         if not moves:
             return moves
 
+        ordering_ms: float = (
+            ORDERING_MAX_MS
+            if time_budget_ms == float("inf")
+            else time_budget_ms * ORDERING_BUDGET_FRACTION
+        )
+        deadline: float = time.time() + ordering_ms / 1000.0
+
         scored: list[tuple[float, Move]] = []
-        for move in moves:
+        unscored_from: int = len(moves)
+        for idx, move in enumerate(moves):
+            if time.time() > deadline:
+                # 排序预算耗尽 → 剩余走法保持原顺序
+                unscored_from = idx
+                break
             board.make_move(move)
             # 走子后 current_player = 对方，评估值 = 对方视角的领地比
             score: float = self._evaluator.evaluate(board)
@@ -431,7 +465,7 @@ class AlphaBetaEngine(Engine):
 
         # 升序排列：对方评估值越低 → 对方越不利 → 对我方越有利
         scored.sort(key=lambda item: item[0])
-        return [m for _, m in scored]
+        return [m for _, m in scored] + moves[unscored_from:]
 
     # =========================================================================
     # 辅助方法

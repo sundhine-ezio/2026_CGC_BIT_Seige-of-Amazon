@@ -1,6 +1,7 @@
 """game/rules.py 的单元测试。"""
 
 import pytest
+
 from src.game.board import Board
 from src.game.constants import BLACK, BURNED, EMPTY, WHITE
 from src.game.move import Move
@@ -178,3 +179,71 @@ class TestIsGameOver:
 
         # 白方无合法走法 → 黑方胜
         assert Rules.get_winner(b) == BLACK
+
+
+class TestGetLegalArrowTargets:
+    """测试 get_legal_arrow_targets——GUI 校验人类落箭所用的口径。
+
+    回归背景：原先 GUI 直接用 get_queen_reachable(board, move_target) 在
+    走子**前**的局面上算箭点，因此亚马逊刚腾出的原位置仍被自己的棋子占着、
+    被判为非法，而 AI 走 get_legal_moves 路径却能走这步棋（射回原位在亚马逊
+    棋里很常见）。人类棋手因此在 GUI 里无法完成该操作。
+    """
+
+    def test_origin_is_legal_arrow_target(self, board: Board) -> None:
+        """亚马逊刚腾出的原位置必须可作箭落点。"""
+        from_pos: tuple[int, int] = (9, 3)  # d1
+        to_pos: tuple[int, int] = (5, 3)  # d5
+        targets: list[tuple[int, int]] = Rules.get_legal_arrow_targets(
+            board, from_pos, to_pos
+        )
+        assert from_pos in targets, "射回原位应当合法"
+
+    def test_destination_is_not_arrow_target(self, board: Board) -> None:
+        """箭不能落在亚马逊自己站着的格子上。"""
+        from_pos: tuple[int, int] = (9, 3)
+        to_pos: tuple[int, int] = (5, 3)
+        targets: list[tuple[int, int]] = Rules.get_legal_arrow_targets(
+            board, from_pos, to_pos
+        )
+        assert to_pos not in targets
+
+    def test_does_not_modify_board(self, board: Board) -> None:
+        """本方法只读，不得改动传入的棋盘。"""
+        before = board.get_grid().copy()
+        Rules.get_legal_arrow_targets(board, (9, 3), (5, 3))
+        assert (board.get_grid() == before).all()
+        assert board.get_current_player() == WHITE
+
+    def test_matches_get_legal_moves(self, board: Board) -> None:
+        """对每个可达落点，箭点集合必须与 get_legal_moves 完全一致。
+
+        这是 GUI 与 AI 口径一致性的保证：AI 能走的箭点，人类也必须能走。
+        """
+        from_pos: tuple[int, int] = (9, 3)
+        pairs: set[tuple[tuple[int, int], tuple[int, int]]] = {
+            (m.to_pos, m.arrow_pos)
+            for m in Rules.get_legal_moves(board)
+            if m.from_pos == from_pos
+        }
+        assert pairs, "测试前提：该亚马逊应有合法走法"
+
+        for to_pos in {to for to, _ in pairs}:
+            expected: set[tuple[int, int]] = {
+                arrow for (to, arrow) in pairs if to == to_pos
+            }
+            actual: set[tuple[int, int]] = set(
+                Rules.get_legal_arrow_targets(board, from_pos, to_pos)
+            )
+            assert actual == expected, f"落点 {to_pos} 的箭点集合与 get_legal_moves 不一致"
+
+    def test_blocked_origin_not_arrow_target(self) -> None:
+        """若原位置被别的棋子占着（非腾空情形），不得当作箭点。"""
+        b: Board = Board()
+        b._grid[5, 2] = BLACK  # type: ignore[attr-defined]
+        # 白方从 d1 走到 d5，原位置 d1 腾空 → d1 合法；但 d5 左侧的 c5 被黑子占
+        targets: list[tuple[int, int]] = Rules.get_legal_arrow_targets(
+            b, (9, 3), (5, 3)
+        )
+        assert (5, 2) not in targets, "被占格不能作箭落点"
+        assert (9, 3) in targets

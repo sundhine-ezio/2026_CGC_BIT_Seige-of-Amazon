@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import threading
 import tkinter as tk
-from tkinter import messagebox
 
 from src.ai.engine import Engine
 from src.game.board import Board
-from src.game.constants import BLACK, EMPTY, WHITE
+from src.game.constants import EMPTY, WHITE
 from src.game.move import Move
 from src.game.rules import Rules
 from src.gui.board_painter import BoardCanvas
@@ -197,8 +196,12 @@ class AmazonsGUI:
                 self._reset_input()
 
         elif self._input_state == self.MOVE_SELECTED:
-            # 点击空格（合法箭落点）→ 完整走法
-            if clicked_val == EMPTY and self._is_legal_arrow_target(row, col):
+            # 合法箭落点 → 完整走法。
+            # 这里刻意不要求 clicked_val == EMPTY：亚马逊刚腾出的原位置在
+            # "走子前"的棋盘上仍是自己的棋子（非空），但它是合法箭落点。
+            # 合法性完全由 _is_legal_arrow_target 判定——它按走子后的局面计算，
+            # 与 AI 走 get_legal_moves 的口径一致。
+            if self._is_legal_arrow_target(row, col):
                 move: Move = Move(
                     from_pos=self._selected_amazon,  # type: ignore[arg-type]
                     to_pos=self._selected_move_target,  # type: ignore[arg-type]
@@ -340,13 +343,18 @@ class AmazonsGUI:
         return (row, col) in reachable
 
     def _is_legal_arrow_target(self, row: int, col: int) -> bool:
-        """检查 (row, col) 是否是从 selected_move_target 的合法箭落点。"""
-        if self._selected_move_target is None:
+        """检查 (row, col) 是否是合法箭落点。
+
+        必须在"亚马逊已移动到目标位置"的局面上判断（见
+        Rules.get_legal_arrow_targets）。用走子前的局面判断会漏掉把箭射回
+        原位置这一常见走法——那正是人类棋手被判非法、而 AI 能走的根因。
+        """
+        if self._selected_amazon is None or self._selected_move_target is None:
             return False
-        reachable: list[tuple[int, int]] = Rules.get_queen_reachable(
-            self._board, self._selected_move_target
+        targets: list[tuple[int, int]] = Rules.get_legal_arrow_targets(
+            self._board, self._selected_amazon, self._selected_move_target
         )
-        return (row, col) in reachable
+        return (row, col) in targets
 
     def _on_new_game(self) -> None:
         """新局按钮回调——弹出模式选择后重启。"""

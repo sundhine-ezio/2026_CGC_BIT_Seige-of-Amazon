@@ -1,5 +1,6 @@
 # 虚拟环境（必须排除，里面的符号链接会让 git add 报错）
 venv/
+.venv/
 
 # Python 缓存
 __pycache__/
