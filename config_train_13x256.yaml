@@ -1,18 +1,32 @@
 # ============================================================
 # 正式训练配置：13 残差块 / 256 滤波器，**从头训练**
 #
-# 设计依据（都有实测支撑）：
-#   - 自对弈瓶颈是 CPU 单核走法生成，实测 GPU 利用率仅 6.4%。因此用
-#     self_play_backend: "gpu_parallel"（多进程 + GPU），这是唯一能同时吃满
-#     多核与双卡的后端。用旧的 "gpu" 后端会只吃 1 核，速度与笔记本无异。
-#   - pit 评估是串行单进程、整个闭环最贵的一环（MCTS@400 约 0.53 秒/步），
-#     因此用 eval_num_simulations 单独把评估降到 400 模拟，换来更勤的观测频率。
-#   - checkpoint 写入独立目录 models/run13x256/，绝不覆盖原有的
-#     models/best_model.pt（那是 4块/128 的旧模型，要留作对比基线）。
+# 所有参数都由实测决定（2026-10-16 在目标机上跑 benches 得到）：
+#
+#  1) 自对弈瓶颈在**显卡**，不在 CPU。实测单卡 GPU0：
+#       前向批 2  →   875 次模拟/秒，GPU 利用率 83%（空转调度，效率约 2%）
+#       前向批 8  →  2540 次模拟/秒
+#       前向批 32 →  3710 次模拟/秒（16 workers）/ 7183 次模拟/秒（32 workers）
+#     模型空间只有 10×10，批小的时候 GPU 全耗在核函数调度上。**批大小是最关键
+#     的参数**：批 2→32 吞吐涨 4.2 倍。用旧配置（批等效为 2）会慢 4 倍以上。
+#
+#  2) 显存约 1.64 GB/worker（32 workers + 批 32 实测 52.5 GB / 97 GB）。
+#     因此 worker 数定在 32：加到 48 约需 79 GB，为 25% 提速冒 OOM 风险不划算
+#     ——这是一次几十小时的长跑，稳定性优先。
+#
+#  3) 后端必须用 "gpu_parallel"：旧的 "gpu" 是单进程 → 只用 1 个核，
+#     实测单进程在该模型下只有约 63 次模拟/秒。
+#
+#  4) 每 cycle 局数 = worker 数 × 每 worker 局数 = 32 × 32 = 1024。
+#     这是池「按轮工作」的结构决定的：一轮 = 所有 worker 各跑固定局数后统一
+#     回传，为的是喂满前向批、且不在队列里积压用旧策略生成的陈旧样本。
+#     因此 cycle 数相应减少到 25，总对局量 25 × 1024 = 25,600 局保持不变。
+#
+# 预计总时长约 30 小时：自对弈 27.7h + 12 次并行评估 50min + 10 万步训练 1.3h
 #
 # 用法：
 #   PYTHONPATH= python main.py --mode train --config config_train_13x256.yaml
-#   建议先用 nohup 挂后台，日志见 logs/
+#   建议放在 tmux 里跑，这样关掉笔记本也不影响（详见说明文档）
 # ============================================================
 
 # --- 游戏规则 ---
@@ -22,7 +36,7 @@ game:
 
 # --- 搜索引擎（训练不使用，仅为兼容配置结构）---
 engine:
-  type: "alphabeta"                   # 比赛请用 alpha-beta；MCTS 待训练后再评估
+  type: "alphabeta"                   # 当前比赛用 alpha-beta；MCTS 待训练后再评估
   model_path: "models/best_model.pt"
 
 # --- Alpha-Beta（保底方案，不参与训练）---
@@ -36,7 +50,8 @@ alphabeta:
 
 # --- MCTS ---
 mcts:
-  num_simulations: 800                # self-play 的模拟次数
+  num_simulations: 400                # 400 而非 800：同样算力下对局数翻倍，
+                                      # 冷启动阶段"更多对局"比"更深搜索"划算
   c_puct: 1.0
   temperature: 0.0
   self_play_temperature: 1.0          # 自我对弈前 30 步用温度采样
@@ -52,35 +67,36 @@ network:
   move_embedding_dim: 128
   hidden_dim: 128
   # 指向**不存在**的路径 → 从头训练。切勿改成 models/best_model.pt：
-  # 那是 4块/128 的权重，与这里的 13块/256 不兼容，加载会 size mismatch 崩溃。
+  # 那是 4块/128 的权重，与 13块/256 不兼容，加载会 size mismatch 崩溃。
   model_path: "models/run13x256_scratch.pt"
 
 # --- 训练 ---
 training:
   device: "cuda"
   batch_size: 512
-  learning_rate: 0.01
+  learning_rate: 0.01                 # 若训练 loss 发散/震荡，优先降这个（0.01 → 0.005）
   momentum: 0.9
   weight_decay: 0.0001
   lr_schedule: "cosine"
-  training_steps_per_cycle: 1000
-  replay_buffer_capacity: 300000
-  self_play_games_per_cycle: 200      # 每 cycle 目标局数（一轮实际产量见下）
-  eval_games: 40                      # 评估局数（串行，约 0.5-1 分钟/局）
-  eval_num_simulations: 400           # 评估用模拟次数（比 self-play 便宜一半）
+  # 总步数 = 25 × 4000 = 10 万，与原计划（100 × 1000）相同，余弦退火曲线不变
+  training_steps_per_cycle: 4000
+  replay_buffer_capacity: 300000      # 每 cycle 新增约 7.2 万样本 → 约 4 个 cycle 填满
+  self_play_games_per_cycle: 1024     # 实际由 池结构决定（见文件头说明）
+  eval_games: 64                      # 32 workers × ceil(64/32)=2 → 实际评估 64 局
+  eval_num_simulations: 400           # 评估用模拟次数（与 self-play 同口径便于对比）
   eval_win_rate_threshold: 0.55
-  num_training_cycles: 100
-  eval_every: 5                       # 每 5 cycle 一次评估，便于早期发现问题
-  checkpoint_every: 5
+  num_training_cycles: 25             # 总对局 25 × 1024 = 25,600
+  eval_every: 2                       # 12 次评估；并行评估一次约 4 分钟，很便宜
+  checkpoint_every: 2                 # 12 份 checkpoint，每份约 124MB
   parallel: false                     # gpu_parallel 自含并行，此项忽略
   num_workers: 0
-  self_play_backend: "gpu_parallel"   # 多进程 + GPU（关键）
-  gpu_batch_size: 8                   # 每个 worker 内并发推进的局数
-  # GPU1 上有别人的任务（实测 67% 利用率 / 8GB 显存，容器外看不到进程），
-  # 因此只用 GPU0。若确认 GPU1 空出来了，可改成 "0,1" 使总时长约减半。
+  self_play_backend: "gpu_parallel"   # 多进程 + GPU（关键，勿改回 "gpu"）
+  gpu_batch_size: 32                  # 每 worker 内并发推进的局数 = 前向批大小（最关键参数）
+  # GPU1 上有别人的任务（实测 88 GB / 约 80% 利用率，容器外看不到进程），
+  # 因此只用 GPU0。若确认 GPU1 空出来了可改成 "0,1"。
   gpu_self_play_devices: "0"
-  gpu_self_play_workers: 32           # 先按 32 起跑；务必用 bench 脚本实测后调整
-  gpu_games_per_round: 7              # 每 worker 每轮局数 → 一轮 32×7 = 224 局
+  gpu_self_play_workers: 32           # 实测吞吐 7183 次模拟/秒，显存 52.5 GB
+  gpu_games_per_round: 32             # 必须 ≥ gpu_batch_size，否则前向批喂不满
   checkpoint_dir: "models/run13x256"  # 独立目录，不碰原有 checkpoint
 
 # --- 开局库 / 残局库（未启用）---
